@@ -17,7 +17,22 @@ parser.add_argument(
     default=False,
 )
 
+parser.add_argument(
+    "--openrouter-api-key",
+    default=os.environ.get("OPENROUTER_API_KEY", ""),
+    help="OpenRouter API key for vision analysis (or set OPENROUTER_API_KEY env var)",
+)
+
+parser.add_argument(
+    "--vision-model",
+    default="google/gemma-4-26b-a4b-it:free",
+    help="OpenRouter vision model to use for screenshot analysis (default: free Gemma vision)",
+)
+
 args = parser.parse_args()
+
+openrouter_api_key: str = args.openrouter_api_key
+vision_model: str = args.vision_model
 
 
 def get_appdata_folder(app_name="openrecall"):
