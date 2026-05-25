@@ -25,21 +25,30 @@ parser.add_argument(
 
 parser.add_argument(
     "--vision-model",
-    default="google/gemma-4-26b-a4b-it:free",
-    help="OpenRouter vision model to use for screenshot analysis (default: free Gemma 4 vision)",
+    default=(
+        "google/gemma-4-26b-a4b-it:free,"
+        "nvidia/nemotron-nano-12b-v2-vl:free,"
+        "google/gemma-4-31b-it:free,"
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    ),
+    help=(
+        "OpenRouter vision model(s) to use for screenshot analysis. "
+        "Comma-separated list — tried in order, falling back on rate limits or errors. "
+        "Defaults to a chain of free vision models."
+    ),
 )
 
 parser.add_argument(
     "--capture-interval",
     type=int,
-    default=30,
-    help="Seconds between screen capture checks (default: 30). Lower = more captures, higher API cost / rate-limit risk.",
+    default=60,
+    help="Seconds between screen capture checks (default: 60). Higher = fewer API calls, less rate-limit pressure.",
 )
 
 args = parser.parse_args()
 
 openrouter_api_key: str = args.openrouter_api_key
-vision_model: str = args.vision_model
+vision_models: list[str] = [m.strip() for m in args.vision_model.split(",") if m.strip()]
 capture_interval: int = args.capture_interval
 
 

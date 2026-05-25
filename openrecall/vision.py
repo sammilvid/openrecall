@@ -1,8 +1,11 @@
 """
 vision.py — AI vision analysis of screenshots via OpenRouter.
 
-Replaces the old OCR-only approach with a vision LLM that understands
-not just text on screen, but context, activity, and intent.
+Sends each screenshot through a configurable fallback chain of vision
+models. On a rate-limit hit (429) we skip immediately to the next model
+in the chain; on transient errors we retry the same model once before
+moving on. The capture loop is never blocked for more than ~total chain
+length seconds.
 """
 
 import base64
@@ -14,9 +17,9 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Free models are sometimes upstream-rate-limited or timeout briefly —
-# a short retry pass smooths over the noise without burning credits.
-MAX_RETRIES = 2
+# Per-model retry policy — only retry on transient errors (504, network,
+# empty content), not on 429s. The chain itself is the real fallback.
+MAX_RETRIES_PER_MODEL = 1     # initial + 1 retry on transient failures
 RETRY_BACKOFF_SECONDS = 5
 
 VISION_PROMPT = (
@@ -34,20 +37,70 @@ MAX_WIDTH = 1280
 MAX_HEIGHT = 720
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Heuristic: did this exception come from a 429 response?"""
+    s = str(exc)
+    return "429" in s or "rate" in s.lower()
+
+
+def _call_model(client, model: str, image_b64: str) -> str:
+    """
+    One vision call against a single model. Returns the description, or
+    raises if the model returned no usable content.
+    """
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}"
+                        },
+                    },
+                    {"type": "text", "text": VISION_PROMPT},
+                ],
+            }
+        ],
+        max_tokens=500,
+    )
+
+    msg = response.choices[0].message if response.choices else None
+    if msg is None:
+        raise ValueError("No choices in vision API response")
+
+    # Reasoning-style models put text in `reasoning` instead of `content`
+    description = (
+        getattr(msg, "content", None)
+        or getattr(msg, "reasoning", None)
+        or ""
+    ).strip()
+
+    if not description:
+        raise ValueError("Vision model returned empty content")
+
+    return description
+
+
 def analyze_screenshot(image: Image.Image) -> str:
     """
-    Sends a screenshot to an OpenRouter vision LLM and returns a rich
-    natural-language description of what is happening on screen.
-
-    Returns an empty string if the API key is not configured or the call fails.
+    Sends a screenshot through the configured fallback chain of vision
+    models. Returns the first successful description, or empty string if
+    every model in the chain fails.
     """
-    from openrecall.config import openrouter_api_key, vision_model
+    from openrecall.config import openrouter_api_key, vision_models
 
     if not openrouter_api_key:
         logger.warning(
             "OPENROUTER_API_KEY is not set. "
             "Pass --openrouter-api-key or set the env var to enable vision analysis."
         )
+        return ""
+
+    if not vision_models:
+        logger.warning("No vision models configured.")
         return ""
 
     try:
@@ -62,71 +115,50 @@ def analyze_screenshot(image: Image.Image) -> str:
             },
         )
 
-        # Resize image to reduce payload size and API cost
+        # Resize and JPEG-encode once — reuse for every model in the chain
         img = image.copy()
         img.thumbnail((MAX_WIDTH, MAX_HEIGHT), Image.LANCZOS)
-
-        # Encode as JPEG (much smaller than lossless WebP for API calls)
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=80)
         image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         last_exc: Exception | None = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                response = client.chat.completions.create(
-                    model=vision_model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{image_b64}"
-                                    },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": VISION_PROMPT,
-                                },
-                            ],
-                        }
-                    ],
-                    max_tokens=500,
-                )
 
-                # Some free/reasoning models put content in different fields,
-                # or return None on partial failures — handle defensively.
-                msg = response.choices[0].message if response.choices else None
-                if msg is None:
-                    raise ValueError("No choices in vision API response")
+        for model_idx, model in enumerate(vision_models):
+            logger.debug("Trying vision model %d/%d: %s",
+                         model_idx + 1, len(vision_models), model)
 
-                description = (
-                    getattr(msg, "content", None)
-                    or getattr(msg, "reasoning", None)
-                    or ""
-                )
-                description = description.strip()
+            for attempt in range(MAX_RETRIES_PER_MODEL + 1):
+                try:
+                    description = _call_model(client, model, image_b64)
+                    logger.info("Vision analysis OK [%s]: %s...",
+                                model, description[:80])
+                    return description
 
-                if not description:
-                    raise ValueError("Vision model returned empty content")
+                except Exception as exc:
+                    last_exc = exc
 
-                logger.info("Vision analysis complete: %s...", description[:80])
-                return description
+                    if _is_rate_limit_error(exc):
+                        # Don't waste time retrying a rate-limited model —
+                        # jump straight to the next one in the chain
+                        logger.info("Model %s rate-limited, falling back", model)
+                        break
 
-            except Exception as exc:
-                last_exc = exc
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Vision attempt %d failed (%s) — retrying in %ds",
-                        attempt + 1, exc, RETRY_BACKOFF_SECONDS,
-                    )
-                    time.sleep(RETRY_BACKOFF_SECONDS)
-                    continue
-                break
+                    if attempt < MAX_RETRIES_PER_MODEL:
+                        logger.debug(
+                            "Model %s attempt %d failed (%s) — retrying in %ds",
+                            model, attempt + 1, exc, RETRY_BACKOFF_SECONDS,
+                        )
+                        time.sleep(RETRY_BACKOFF_SECONDS)
+                        continue
 
-        logger.error("Vision analysis failed after %d retries: %s", MAX_RETRIES, last_exc)
+                    logger.warning("Model %s exhausted retries: %s", model, exc)
+                    break
+
+        logger.error(
+            "All %d vision models failed. Last error: %s",
+            len(vision_models), last_exc,
+        )
         return ""
 
     except Exception as exc:
