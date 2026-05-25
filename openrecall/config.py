@@ -25,14 +25,22 @@ parser.add_argument(
 
 parser.add_argument(
     "--vision-model",
-    default="google/gemma-4-26b-a4b-it:free",
-    help="OpenRouter vision model to use for screenshot analysis (default: free Gemma vision)",
+    default="nvidia/nemotron-nano-12b-v2-vl:free",
+    help="OpenRouter vision model to use for screenshot analysis (default: free NVIDIA Nemotron vision)",
+)
+
+parser.add_argument(
+    "--capture-interval",
+    type=int,
+    default=30,
+    help="Seconds between screen capture checks (default: 30). Lower = more captures, higher API cost / rate-limit risk.",
 )
 
 args = parser.parse_args()
 
 openrouter_api_key: str = args.openrouter_api_key
 vision_model: str = args.vision_model
+capture_interval: int = args.capture_interval
 
 
 def get_appdata_folder(app_name="openrecall"):

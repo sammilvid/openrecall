@@ -14,7 +14,7 @@ import mss
 import numpy as np
 from PIL import Image
 
-from openrecall.config import screenshots_path, args
+from openrecall.config import screenshots_path, args, capture_interval
 from openrecall.database import insert_entry
 from openrecall.vision import analyze_screenshot
 from openrecall.utils import (
@@ -82,7 +82,7 @@ def record_screenshots_thread() -> None:
 
     while True:
         if not is_user_active():
-            time.sleep(3)
+            time.sleep(capture_interval)
             continue
 
         current_screenshots = take_screenshots()
@@ -90,7 +90,7 @@ def record_screenshots_thread() -> None:
         # Handle monitor count change gracefully
         if len(last_screenshots) != len(current_screenshots):
             last_screenshots = current_screenshots
-            time.sleep(3)
+            time.sleep(capture_interval)
             continue
 
         for i, current in enumerate(current_screenshots):
@@ -121,4 +121,4 @@ def record_screenshots_thread() -> None:
                     filename=filename,
                 )
 
-        time.sleep(3)
+        time.sleep(capture_interval)
