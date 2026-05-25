@@ -25,8 +25,8 @@ parser.add_argument(
 
 parser.add_argument(
     "--vision-model",
-    default="nvidia/nemotron-nano-12b-v2-vl:free",
-    help="OpenRouter vision model to use for screenshot analysis (default: free NVIDIA Nemotron vision)",
+    default="google/gemma-4-26b-a4b-it:free",
+    help="OpenRouter vision model to use for screenshot analysis (default: free Gemma 4 vision)",
 )
 
 parser.add_argument(
